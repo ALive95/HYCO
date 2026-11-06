@@ -1139,3 +1139,61 @@ def plot_gs_comparison(snap_times, row_fields, save_path, component='u'):
     fig.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved {save_path}")
+
+
+# ── LWR: alternating vs simultaneous updates (paper Section 7.4) ─────────────
+CLAW_ALTERNATION_METRICS = ("e_p", "e_s_phy", "e_s_syn", "objective")
+
+
+def plot_claw_alternation(runs, seeds, save_path):
+    """
+    Paired alternating/simultaneous histories over several seeds.
+
+    Faint curves: individual seeds; bold curves: arithmetic means. Panel titles
+    report the reduction of the terminal mean (alternating vs simultaneous).
+
+    Args:
+        runs (dict): seed -> method -> {'cycle': (n,), metric: (n,)} for
+            methods 'alternating' and 'simultaneous' (see alternation_claw.py).
+        seeds (sequence[int]): Seeds to plot.
+        save_path (str | Path): Output path without extension; .png and .pdf
+            are written.
+
+    Returns:
+        dict: method -> metric -> (n,) mean history.
+    """
+    methods = ("alternating", "simultaneous")
+    labels = {
+        "e_p": r"Parameter error $\mathsf{e}_p$",
+        "e_s_phy": r"Physical field error $\mathsf{e}_s^{\mathrm{phy}}$",
+        "e_s_syn": r"Synthetic field error $\mathsf{e}_s^{\mathrm{syn}}$",
+        "objective": r"Full Loss $\mathsf{L}$",
+    }
+    colors = {"alternating": "tab:blue", "simultaneous": "tab:orange"}
+    cycles = runs[seeds[0]]["alternating"]["cycle"]
+    mean = {m: {k: np.mean([runs[s][m][k] for s in seeds], axis=0)
+                for k in CLAW_ALTERNATION_METRICS} for m in methods}
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7.2), sharex=True)
+    for ax, metric in zip(axes.flat, CLAW_ALTERNATION_METRICS):
+        for method in methods:
+            for seed in seeds:
+                ax.plot(runs[seed][method]["cycle"], runs[seed][method][metric],
+                        color=colors[method], alpha=0.20, linewidth=0.9)
+            ax.plot(cycles, mean[method][metric], color=colors[method], linewidth=2.4,
+                    label=method.capitalize())
+        reduction = 100 * (1 - mean["alternating"][metric][-1]
+                           / mean["simultaneous"][metric][-1])
+        ax.set_title(f"{labels[metric]}\nMean reduction: {reduction:+.2f}%")
+        ax.set_yscale("log")
+        ax.set_ylabel("Relative error" if metric != "objective" else "Full Loss")
+        ax.grid(True, which="both", alpha=0.25)
+    for ax in axes[-1]:
+        ax.set_xlabel("Epoch")
+    axes[0, 0].legend(frameon=False)
+    fig.tight_layout()
+    for ext in ("png", "pdf"):
+        fig.savefig(f"{save_path}.{ext}", dpi=200)
+    plt.close(fig)
+    print(f"Saved {save_path}.png")
+    return mean

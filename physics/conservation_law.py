@@ -126,6 +126,30 @@ def lwr_flux(u, params):
     return params['v_max'] * u * (1.0 - u / params['rho_max'])
 
 
+def lwr_godunov_flux(u_left, u_right, params):
+    """
+    Godunov (exact Riemann) flux for the concave LWR flux.
+
+    Used by the optional PINN boundary penalty: matching f(u) to the Godunov
+    flux with the boundary state imposes incoming information while leaving
+    the outgoing trace free, as for the FV solver's boundary cells.
+
+    Args:
+        u_left (jnp.ndarray): (N,) left states.
+        u_right (jnp.ndarray): (N,) right states.
+        params (dict): Must contain 'v_max' and 'rho_max'.
+
+    Returns:
+        jnp.ndarray: (N,) Godunov flux values.
+    """
+    f_left, f_right = lwr_flux(u_left, params), lwr_flux(u_right, params)
+    critical = 0.5 * params['rho_max']
+    peak = 0.25 * params['v_max'] * params['rho_max']
+    f_max = jnp.where((u_right <= critical) & (critical <= u_left), peak,
+                      jnp.maximum(f_left, f_right))
+    return jnp.where(u_left <= u_right, jnp.minimum(f_left, f_right), f_max)
+
+
 def lwr_max_wave_speed(u_left, u_right, params):
     """
     Wave speed estimate for LWR: max |f'(u)| = v_max * |1 - 2u/rho_max|.

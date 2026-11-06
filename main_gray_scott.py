@@ -183,6 +183,8 @@ def run_experiment(seed, config, run_tag="", mode="basic", load=False):
     GAMMA          = config['GAMMA']
     GAMMA_IC       = config['GAMMA_IC']
     LR_PHY_PINN    = config['LR_PHY_PINN']
+    PINN_BC        = config.get('PINN_BC', False)
+    N_PER          = config.get('N_PER', 1024)
     E_HYCO, E_NN, E_PINN = config['E_HYCO'], config['E_NN'], config['E_PINN']
     N_PRETRAIN            = config.get('N_PRETRAIN', 0)
     N_LBFGS               = config.get('N_LBFGS', 0)
@@ -303,7 +305,7 @@ def run_experiment(seed, config, run_tag="", mode="basic", load=False):
 
     # ── PINN baseline ──────────────────────────────────────────────────────────
     if mode in ("comparison", "full"):
-        path = f"saved_models/gray_scott_pinn{run_tag}.pkl"
+        path = f"saved_models/gray_scott_pinn{run_tag}{'_bc' if PINN_BC else ''}.pkl"
         r = (load_gs_compat(path, 'PINN')
              if load and os.path.exists(path) else None)
         if r is not None:
@@ -320,7 +322,8 @@ def run_experiment(seed, config, run_tag="", mode="basic", load=False):
                     gamma=GAMMA, schedule=schedule_syn, n_epochs=E_PINN,
                     key=k_pinn_train, activation=PINN_ACTIVATION, gamma_ic=GAMMA_IC,
                     n_pretrain=N_PRETRAIN, n_lbfgs=N_LBFGS, net_forward=forward_mlp,
-                    schedule_phy=optax.constant_schedule(LR_PHY_PINN))
+                    schedule_phy=optax.constant_schedule(LR_PHY_PINN),
+                    per_n=N_PER if PINN_BC else 0)
             t_pinn = _t.elapsed
             save_gs(path, syn_pinn, phy_pinn, hist_pinn)
 
@@ -494,6 +497,10 @@ def main():
         # diffusivities overshooting during joint PDE-residual optimization.
         # New key, untuned beyond "clearly lower than LR"; adjust if needed.
         LR_PHY_PINN=1e-4,
+        # Periodicity penalty for the PINN (values and normal derivatives at
+        # opposite sides, N_PER points per pair, weight GAMMA). False reproduces
+        # the paper's PINN; True adds it (checkpoint gets a "_bc" suffix).
+        PINN_BC=False, N_PER=1024,
         # opt-PINN (best-practice PINN competitor; see train_opt_pinn_gs)
         N_FREQ=64, SIGMA_X=3.0, SIGMA_T=1.0,   # Fourier features (normalized units)
         TAU_IC=50.0,                            # hard-IC ramp timescale

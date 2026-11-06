@@ -1,0 +1,54 @@
+{
+  "alternating": {
+    "status": "complete",
+    "numerical_validity": {
+      "density_max": 0.9,
+      "density_min": 0.1,
+      "finite": true,
+      "max_cfl_bound": 0.563668969718251,
+      "positive": true,
+      "valid_cfl": true,
+      "valid_density": true
+    },
+    "L_int": 0.0008106117364466065,
+    "L_phy": 0.01353312404246818,
+    "L_syn": 0.00022486535687740532,
+    "cycle": 5000,
+    "density_max": 0.9,
+    "density_min": 0.1,
+    "e_p": 0.15655759053278093,
+    "e_s_phy": 0.1357547323602909,
+    "e_s_phy_coarse": 0.13642381007105342,
+    "e_s_syn": 0.14370354269689312,
+    "max_courant": 0.3218211037963111,
+    "objective": 0.0010354770933240119,
+    "rho_max": 0.9835252767800485,
+    "v_max": 0.7792079217868408
+  },
+  "simultaneous": {
+    "status": "complete",
+    "numerical_validity": {
+      "density_max": 0.9,
+      "density_min": 0.1,
+      "finite": true,
+      "max_cfl_bound": 0.5767201006902687,
+      "positive": true,
+      "valid_cfl": true,
+      "valid_density": true
+    },
+    "L_int": 0.0007844836100773347,
+    "L_phy": 0.016511392928818064,
+    "L_syn": 0.00025113933526196434,
+    "cycle": 5000,
+    "density_max": 0.9,
+    "density_min": 0.1,
+    "e_p": 0.4207391039245296,
+    "e_s_phy": 0.27952825332695075,
+    "e_s_phy_coarse": 0.26557020128376435,
+    "e_s_syn": 0.2645142672836574,
+    "max_courant": 0.2126634775768614,
+    "objective": 0.001035622945339299,
+    "rho_max": 0.8874772000154326,
+    "v_max": 0.4157214648593829
+  }
+}

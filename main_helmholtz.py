@@ -100,6 +100,8 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
     PINN_N_COL            = config['PINN_N_COL']
     PINN_GAMMA_INIT         = config['PINN_GAMMA_INIT']
     PINN_GAMMA_WARMUP_FRAC  = config['PINN_GAMMA_WARMUP_FRAC']
+    PINN_BC                 = config.get('PINN_BC', False)
+    pinn_tag                = '_bc' if PINN_BC else ''
     schedule_syn_pinn     = optax.cosine_decay_schedule(
         config['PINN_LR_SYN'], PINN_N_EPOCHS, alpha=0.01)
     schedule_phy_amp_pinn = optax.cosine_decay_schedule(
@@ -155,6 +157,9 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
 
     ghost_pool_xy, ghost_pool_tri, ghost_pool_bary = \
         sample_ghost_on_mesh(k_ghost, fem_coarse, N_GHOST_POOL)
+
+    # Optional homogeneous Dirichlet penalty for PINN / SA-PINN (fine boundary nodes).
+    bnd_xy = fem_fine.nodes[np.array(bnd_fine)] if PINN_BC else None
 
     # ── Results containers (None = method not run this call) ──────────────────
     syn_hyco   = phy_hyco   = hist_hyco   = t_hyco_elapsed   = None
@@ -220,7 +225,7 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
 
     # ── PINN (comparison / full) ───────────────────────────────────────────────
     if mode in ("comparison", "full"):
-        pinn_path = f'saved_models/helmholtz_pinn{run_tag}.pkl'
+        pinn_path = f'saved_models/helmholtz_pinn{run_tag}{pinn_tag}.pkl'
         if load and os.path.exists(pinn_path):
             print(f"Loading PINN from {pinn_path}")
             with open(pinn_path, 'rb') as _fh:
@@ -242,13 +247,14 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
                     n_epochs=PINN_N_EPOCHS,
                     key=k_pinn_train, activation=PINN_ACTIVATION,
                     gamma_init=PINN_GAMMA_INIT, gamma_warmup_frac=PINN_GAMMA_WARMUP_FRAC,
+                    bnd_xy=bnd_xy,
                 )
             t_pinn_elapsed = _t.elapsed
             save_claw(pinn_path, syn_pinn, phy_pinn, hist_pinn, elapsed=t_pinn_elapsed)
 
     # ── SA-PINN (comparison / full) ───────────────────────────────────────────
     if mode in ("comparison", "full"):
-        sapinn_path = f'saved_models/helmholtz_sapinn{run_tag}.pkl'
+        sapinn_path = f'saved_models/helmholtz_sapinn{run_tag}{pinn_tag}.pkl'
         if load and os.path.exists(sapinn_path):
             print(f"Loading SA-PINN from {sapinn_path}")
             with open(sapinn_path, 'rb') as _fh:
@@ -270,6 +276,7 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
                     n_epochs=SAPINN_N_EPOCHS, key=k_sapinn_train,
                     activation=PINN_ACTIVATION, lam_lr=SAPINN_LAM_LR,
                     gamma_init=SAPINN_GAMMA_INIT, gamma_warmup_frac=SAPINN_GAMMA_WARMUP_FRAC,
+                    bnd_xy=bnd_xy,
                 )
             t_sapinn_elapsed = _t.elapsed
             save_claw(sapinn_path, syn_sapinn, phy_sapinn, hist_sapinn, elapsed=t_sapinn_elapsed)
@@ -478,6 +485,9 @@ def main():
         SAPINN_GAMMA=100.0, SAPINN_N_COL=2000, SAPINN_N_EPOCHS=30000,
         SAPINN_LAM_LR=1e-3,
         SAPINN_GAMMA_INIT=1.0, SAPINN_GAMMA_WARMUP_FRAC=0.2,
+        # Dirichlet boundary penalty for PINN and SA-PINN. False reproduces the
+        # paper's baselines; True adds it (checkpoints get a "_bc" suffix).
+        PINN_BC=False,
     )
 
     multi_seed  = len(SEEDS) > 1

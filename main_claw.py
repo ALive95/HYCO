@@ -24,6 +24,7 @@ import optax
 
 from physics.conservation_law import (
     make_mesh, precompute_fv, solve_conservation_law, lwr_flux, lwr_max_wave_speed,
+    lwr_godunov_flux,
 )
 from synthetic.nn import init_params, forward
 from utils.training import (
@@ -59,6 +60,24 @@ def ic(cell_centers):
     )
 
 
+def pinn_bc_kwargs(x_cells, u0, T, x_left, x_right, bc_val, n_bc):
+    """
+    Optional PINN initial/boundary penalties (config PINN_BC=True).
+
+    Initial profile at the reference cell centers; at both ends, flux
+    compatibility with the reservoir state through the Godunov flux, which
+    imposes incoming information and leaves the outgoing trace free.
+    Both weights default to the PINN weight GAMMA.
+    """
+    t_bc = jnp.linspace(0.0, T, n_bc)
+    return dict(
+        tx_ic=jnp.stack([jnp.zeros_like(x_cells), x_cells], axis=1), u_ic=u0,
+        tx_bc_left=jnp.stack([t_bc, jnp.full_like(t_bc, x_left)], axis=1),
+        tx_bc_right=jnp.stack([t_bc, jnp.full_like(t_bc, x_right)], axis=1),
+        u_bc=bc_val, num_flux_fn=lwr_godunov_flux,
+    )
+
+
 def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=False):
     """
     Run one or more methods for the LWR experiment under the given mode.
@@ -91,6 +110,8 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
     N_COL    = config['N_COL']
     N_EPOCHS = config['N_EPOCHS']
     GAMMA    = config['GAMMA']
+    PINN_BC  = config.get('PINN_BC', False)
+    pinn_tag = '_bc' if PINN_BC else ''
 
     schedule_syn_hyco = optax.cosine_decay_schedule(5e-4, N_EPOCHS, alpha=0.01)
     schedule_phy_hyco = optax.cosine_decay_schedule(1e-3, N_EPOCHS, alpha=0.01)
@@ -115,7 +136,7 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
 
     true_params_full = {**TRUE_PARAMS, 'flux_fn': lwr_flux,
                         'max_wave_speed_fn': lwr_max_wave_speed}
-    _, u_hist_ref = solve_conservation_law(
+    t_hist_ref, u_hist_ref = solve_conservation_law(
         fv_fine, u0_fine, true_params_full, T, cfl=CFL,
         bc_left=BC_VAL, bc_right=BC_VAL)
     u_ref_array = jnp.stack(u_hist_ref)
@@ -123,6 +144,9 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
 
     tx_data = sample_ghost(k_data, N_DATA,
                            t_range=(0.0, T_DATA), x_range=(X_LEFT, X_DATA_R))
+    # Observations keep the archived convention (uniform snapshot times), so that
+    # saved checkpoints are replayed on their original training data; the
+    # difference from the correctly timed values is below 1e-4.
     u_data  = interp_solution(u_ref_array, fv_fine.cell_centers, T, tx_data)
     print(f"Data: {N_DATA} points in t in [0, {T_DATA}], x in [{X_LEFT}, {X_DATA_R}]")
 
@@ -200,7 +224,7 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
 
     # ── PINN (comparison / full) ───────────────────────────────────────────────
     if mode in ("comparison", "full"):
-        pinn_path = f'saved_models/claw_pinn{run_tag}.pkl'
+        pinn_path = f'saved_models/claw_pinn{run_tag}{pinn_tag}.pkl'
         if load and os.path.exists(pinn_path):
             print(f"Loading PINN from {pinn_path}")
             syn_pinn, phy_pinn, hist_pinn, t_pinn_elapsed = load_claw(pinn_path)
@@ -214,6 +238,8 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
                     n_col=N_COL, n_epochs=N_EPOCHS,
                     t_range=t_range, x_range=x_range, key=k_pinn_train,
                     activation=PINN_ACTIVATION,
+                    **(pinn_bc_kwargs(fv_fine.cell_centers, u0_fine, T, X_LEFT, X_RIGHT,
+                                      BC_VAL, N_COL) if PINN_BC else {}),
                 )
             t_pinn_elapsed = _t.elapsed
             print(f"  PINN: v_max={float(phy_pinn['v_max']):.4f}  "
@@ -257,14 +283,15 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
             print(f"Loading HYCO from {_p} for comparison.")
             syn_hyco, phy_hyco, hist_hyco, t_hyco_elapsed = load_claw(_p)
     if syn_pinn is None:
-        _p = f'saved_models/claw_pinn{run_tag}.pkl'
+        _p = f'saved_models/claw_pinn{run_tag}{pinn_tag}.pkl'
         if os.path.exists(_p):
             print(f"Loading PINN from {_p} for comparison.")
             syn_pinn, phy_pinn, hist_pinn, t_pinn_elapsed = load_claw(_p)
 
     # ── Evaluation ─────────────────────────────────────────────────────────────
     tx_eval     = sample_ghost(k_eval, 2000, (0.0, T), (X_LEFT, X_RIGHT))
-    u_true_eval = interp_solution(u_ref_array, fv_fine.cell_centers, T, tx_eval)
+    u_true_eval = interp_solution(u_ref_array, fv_fine.cell_centers, T, tx_eval,
+                                  t_hist=t_hist_ref)
     norm        = jnp.sqrt(jnp.mean(u_true_eval ** 2))
 
     def param_error(p):
@@ -351,7 +378,8 @@ def run_experiment(seed, alpha, beta, config, run_tag="", mode="basic", load=Fal
     TT, XX = np.meshgrid(t_grid_plot, x_grid_plot, indexing='ij')
     tx_grid = jnp.stack([jnp.array(TT.ravel()), jnp.array(XX.ravel())], axis=1)
     u_ref_grid = np.array(interp_solution(
-        u_ref_array, fv_fine.cell_centers, T, tx_grid)).reshape(N_T_PLOT, N_X_PLOT)
+        u_ref_array, fv_fine.cell_centers, T, tx_grid,
+        t_hist=t_hist_ref)).reshape(N_T_PLOT, N_X_PLOT)
 
     def _hyco_phy_grid(phy):
         full_p = make_full_params(phy, lwr_flux, lwr_max_wave_speed)
@@ -450,6 +478,9 @@ def main():
         N_FINE=2000, N_COARSE=50,
         N_DATA=100, N_GHOST=2000, N_COL=2000,
         N_EPOCHS=20000, GAMMA=5.0,
+        # PINN initial/boundary penalties. False reproduces the paper's PINN
+        # (data + residual only); True adds them (checkpoints get a "_bc" suffix).
+        PINN_BC=False,
     )
 
     multi_seed = len(SEEDS) > 1

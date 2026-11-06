@@ -4,3 +4,21 @@ __pycache__/
 .ipynb_checkpoints/
 .vscode/
 .idea/
+
+# Local environment, paper material and review code (not part of the release)
+/.venv/
+/.pytest_cache/
+/files/
+/extra/
+
+# Revision outputs (large or exploratory)
+/saved_models/helmholtz_updates/
+/saved_models/helmholtz_losses/
+/saved_models/update_screening/
+/saved_models/pinn_boundary_revision/
+/saved_models/sensitivity_custom/
+/saved_models/claw_alternation/*/source/
+/saved_models/claw_alternation/*/paired_data_and_initial.pkl
+/figures/helmholtz/updates/
+/figures/helmholtz/losses/
+/figures/update_screening/

@@ -1,0 +1,47 @@
+{
+  "trial": "faster_syn",
+  "seed": 42,
+  "config": {
+    "n_epochs": 5000,
+    "n_data": 100,
+    "n_ghost": 2000,
+    "hidden": 128,
+    "n_coarse": 50,
+    "n_fine": 2000,
+    "T": 2.0,
+    "x_left": 0.0,
+    "x_right": 3.0,
+    "cfl": 0.5,
+    "t_data": 0.5,
+    "x_data_left": 0.0,
+    "x_data_right": 1.5,
+    "alpha": 1.0,
+    "beta": 0.0,
+    "gamma_int": 1.0,
+    "lr_syn": 0.002,
+    "lr_phy": 0.001,
+    "schedule": "cosine",
+    "decay_alpha": 0.01,
+    "n_eval": 2000,
+    "n_fixed": 2000,
+    "eval_every": 100,
+    "size": "paper"
+  },
+  "provenance": {
+    "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "jax": "0.11.2",
+    "devices": [
+      "cpu:0"
+    ],
+    "source_sha256": {
+      "screen_lwr_updates.py": "5bacdb3f3033d026f88f2316abb6e3757f0a43f5f8037972aebfe8c5a6b3fcac",
+      "utils/lwr_updates.py": "68fc1ba51dea9bdd6502129fc120449db5249f8f13d3cae86c8614180e654353",
+      "utils/training.py": "ee2d759b95f1f5e5d899ceaf579464d61238e7c7a2a050b1aad15d3d010aa36c",
+      "physics/conservation_law.py": "df5badd6bb6aba9086560a7f630080fcef557fc37ff8af4bd6e074b731006ab0",
+      "synthetic/nn.py": "5f2f6105a371e9a1a6851010c700d74c01f6306c22099bc226148bfc7d3c70be"
+    },
+    "reference": "Fixed-dt SSP-RK2 with actual uniform physical times; no adaptive-time remapping.",
+    "protocol": "Exploratory screening; shared potential has one interaction term; paired initial state and ghosts; no fine-tuning."
+  }
+}

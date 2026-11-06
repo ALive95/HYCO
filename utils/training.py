@@ -84,15 +84,18 @@ def solve_fv_fixed(fv_data, u0, params, n_steps, dt, bc_left=0.0, bc_right=0.0):
     return jnp.concatenate([u0[None], u_hist], axis=0)
 
 
-def interp_solution(u_hist, x_cells, T, tx):
+def interp_solution(u_hist, x_cells, T, tx, t_hist=None):
     """
     Bilinear interpolation of a 2D FV solution array at arbitrary (t, x) points.
 
     Args:
-        u_hist (jnp.ndarray): (n_t, n_x) solution snapshots on uniform time grid.
+        u_hist (jnp.ndarray): (n_t, n_x) solution snapshots.
         x_cells (jnp.ndarray): (n_x,) cell center positions.
         T (float): Final time (first snapshot is at t=0, last at t=T).
         tx (jnp.ndarray): (Q, 2) query points with columns [t, x].
+        t_hist (array | None): (n_t,) snapshot times. None means a uniform
+            time grid on [0, T] (fixed-step solvers); pass the actual times
+            for adaptive-step solutions.
 
     Returns:
         jnp.ndarray: (Q,) interpolated values.
@@ -100,7 +103,12 @@ def interp_solution(u_hist, x_cells, T, tx):
     n_t, n_x = u_hist.shape
     t_q, x_q = tx[:, 0], tx[:, 1]
 
-    t_idx = t_q / T * (n_t - 1)
+    if t_hist is None:
+        t_idx = t_q / T * (n_t - 1)
+    else:
+        t_hist = jnp.asarray(t_hist)
+        t_k = jnp.clip(jnp.searchsorted(t_hist, t_q, side='right') - 1, 0, n_t - 2)
+        t_idx = t_k + (t_q - t_hist[t_k]) / (t_hist[t_k + 1] - t_hist[t_k])
     t_lo = jnp.clip(jnp.floor(t_idx).astype(jnp.int32), 0, n_t - 2)
     t_f = t_idx - t_lo
 
@@ -334,7 +342,9 @@ def train_pinn(syn_params, phy_params,
                n_col, n_epochs,
                t_range, x_range, key,
                activation=jax.nn.tanh, stab_window=1000, stab_tol=1e-4,
-               tx_ic=None, u_ic=None, gamma_ic=None):
+               tx_ic=None, u_ic=None, gamma_ic=None,
+               tx_bc_left=None, tx_bc_right=None, u_bc=None,
+               num_flux_fn=None, gamma_bc=None):
     """
     PINN training for 1D conservation laws.
     Jointly optimises NN and physical parameters via data + PDE residual losses.
@@ -359,11 +369,21 @@ def train_pinn(syn_params, phy_params,
             given, a soft IC loss ||u(0,x) - u_ic||^2 is added.
         u_ic (jnp.ndarray | None): (K,) initial-datum values.
         gamma_ic (float | None): Weight on the IC loss; defaults to gamma.
+        tx_bc_left, tx_bc_right (jnp.ndarray | None): (K,2) boundary
+            coordinates [t, x_left] and [t, x_right]. If given, the boundary
+            penalty |f(u) - G(u_bc, u)|^2 (left) + |f(u) - G(u, u_bc)|^2
+            (right) is added, G = num_flux_fn: incoming information is imposed
+            and the outgoing trace is left free.
+        u_bc (float | None): Boundary (reservoir) state.
+        num_flux_fn (callable | None): Numerical flux G(u_left, u_right, params),
+            e.g. physics.conservation_law.lwr_godunov_flux.
+        gamma_bc (float | None): Weight on the boundary loss; defaults to gamma.
 
     Returns:
         tuple: (syn_params, phy_params, history).
     """
     w_ic = gamma if gamma_ic is None else gamma_ic
+    w_bc = gamma if gamma_bc is None else gamma_bc
     all_params = {'syn': syn_params, 'phy': phy_params}
     opt = optax.adam(schedule)
     state = opt.init(all_params)
@@ -379,6 +399,13 @@ def train_pinn(syn_params, phy_params,
             if tx_ic is not None:
                 l_ic = jnp.mean((forward(sp, tx_ic, activation=activation) - u_ic) ** 2)
                 l_total = l_total + w_ic * l_ic
+            if tx_bc_left is not None:
+                u_l = forward(sp, tx_bc_left, activation=activation)
+                u_r = forward(sp, tx_bc_right, activation=activation)
+                r_l = flux_fn(u_l, pp) - num_flux_fn(jnp.full_like(u_l, u_bc), u_l, pp)
+                r_r = flux_fn(u_r, pp) - num_flux_fn(u_r, jnp.full_like(u_r, u_bc), pp)
+                l_bc = 0.5 * (jnp.mean(r_l ** 2) + jnp.mean(r_r ** 2))
+                l_total = l_total + w_bc * l_bc
             return l_total, (l_data, l_pde)
 
         (l_total, (l_data, l_pde)), grads = jax.value_and_grad(objective, has_aux=True)(params)
@@ -655,6 +682,7 @@ def train_pinn_helmholtz(
     gamma, n_col, n_ghost_pool, n_epochs, key,
     activation, stab_window=1000, stab_tol=1e-3,
     gamma_init=1.0, gamma_warmup_frac=0.2,
+    bnd_xy=None, gamma_bc=None,
 ):
     """
     PINN training for Helmholtz BVP. `activation` MUST be smooth (tanh) for grad-of-grad.
@@ -670,7 +698,12 @@ def train_pinn_helmholtz(
             the network's second derivatives are meaningful.
         gamma_warmup_frac (float): Fraction of n_epochs over which gamma
             ramps from gamma_init to gamma.
+        bnd_xy (jnp.ndarray | None): (B, 2) boundary nodes. If given, the
+            homogeneous Dirichlet penalty mean(u(bnd_xy)^2) is added.
+        gamma_bc (float | None): Fixed weight on the boundary loss; defaults
+            to gamma (its final value, not ramped).
     """
+    w_bc = gamma if gamma_bc is None else gamma_bc
     all_pinn = {'syn': pinn_syn, 'phy': pinn_phy}
     labels = {
         'syn': jax.tree_util.tree_map(lambda _: 'syn', pinn_syn),
@@ -696,7 +729,10 @@ def train_pinn_helmholtz(
             l_data = jnp.mean((forward(p['syn'], sensor_xy, activation=activation) - u_data) ** 2)
             res = pde_residual_helmholtz(p['syn'], p['phy'], xy_col, activation)
             l_pde = jnp.mean(res ** 2)
-            return l_data + gamma_val * l_pde, (l_data, l_pde)
+            l_total = l_data + gamma_val * l_pde
+            if bnd_xy is not None:
+                l_total = l_total + w_bc * jnp.mean(forward(p['syn'], bnd_xy, activation=activation) ** 2)
+            return l_total, (l_data, l_pde)
         (lt, (ld, lp)), g = jax.value_and_grad(objective, has_aux=True)(params)
         updates, st = opt_pinn.update(g, st, params)
         return optax.apply_updates(params, updates), st, lt, ld, lp
@@ -740,6 +776,8 @@ def train_sapinn_helmholtz(
     stab_tol=1e-3,
     gamma_init=1.0,
     gamma_warmup_frac=0.2,
+    bnd_xy=None,
+    gamma_bc=None,
 ):
     """
     Self-Adaptive PINN (SA-PINN) for Helmholtz parameter identification.
@@ -777,10 +815,15 @@ def train_sapinn_helmholtz(
             fixed from epoch 0.
         gamma_warmup_frac (float): Fraction of n_epochs over which gamma
             ramps from gamma_init to gamma.
+        bnd_xy (jnp.ndarray | None): (B, 2) boundary nodes. If given, the
+            homogeneous Dirichlet penalty mean(u(bnd_xy)^2) is added with a
+            fixed (non-adaptive) weight.
+        gamma_bc (float | None): Weight on the boundary loss; defaults to gamma.
 
     Returns:
         tuple: (syn_params, phy_params, history).
     """
+    w_bc = gamma if gamma_bc is None else gamma_bc
     all_pinn = {'syn': pinn_syn, 'phy': pinn_phy}
     lam = jnp.ones(n_ghost_pool)  # per-collocation-point weights, init to 1
 
@@ -813,7 +856,10 @@ def train_sapinn_helmholtz(
             res    = pde_residual_helmholtz(p['syn'], p['phy'], xy_col, activation)
             # weighted residual: λ_i · r_i (λ indexed into pool by col_idx)
             l_pde  = jnp.mean((l[col_idx] * res) ** 2)
-            return l_data + gamma_val * l_pde, (l_data, l_pde)
+            l_total = l_data + gamma_val * l_pde
+            if bnd_xy is not None:
+                l_total = l_total + w_bc * jnp.mean(forward(p['syn'], bnd_xy, activation=activation) ** 2)
+            return l_total, (l_data, l_pde)
 
         (_, (ld, lp)), (g_p, g_l) = jax.value_and_grad(
             objective, argnums=(0, 1), has_aux=True)(params, lam_)
@@ -1782,7 +1828,8 @@ def train_pinn_gs(syn_params, phy_init, fixed_phy,
                   activation=jax.nn.tanh, ic_n=64, gamma_ic=None,
                   n_pretrain=0, n_lbfgs=0,
                   stab_window=1000, stab_tol=1e-4,
-                  schedule_phy=None, net_forward=forward):
+                  schedule_phy=None, net_forward=forward,
+                  per_n=0, gamma_per=None):
     """
     PINN baseline for Gray-Scott: joint NN + recovered-parameter optimisation.
 
@@ -1824,11 +1871,36 @@ def train_pinn_gs(syn_params, phy_init, fixed_phy,
         schedule_phy (optax schedule | None): LR schedule for phy_log; defaults
             to a constant 1e-4 (10x below a typical syn LR) if not given.
         net_forward (callable): Network apply function (see train_hyco_gs).
+        per_n (int): Points per pair of opposite sides for the optional
+            periodicity penalty (values and normal derivatives matched across
+            x=0/x=L and y=0/y=L; derivatives scaled by L^2). 0 disables it.
+            The points reuse the (x, y, t) of the first per_n collocation points.
+        gamma_per (float | None): Weight on the periodicity loss; defaults to gamma.
 
     Returns:
         tuple: (syn_params, phy_params, history), phy_params in physical units.
     """
     w_ic = gamma if gamma_ic is None else gamma_ic
+    w_per = gamma if gamma_per is None else gamma_per
+
+    if per_n > 0:
+        q = xyt_col[:per_n]
+        zero, side = jnp.zeros(per_n), jnp.full(per_n, DOMAIN_L)
+        per_pts = (jnp.stack([zero, q[:, 1], q[:, 2]], axis=1),   # x = 0
+                   jnp.stack([side, q[:, 1], q[:, 2]], axis=1),   # x = L
+                   jnp.stack([q[:, 0], zero, q[:, 2]], axis=1),   # y = 0
+                   jnp.stack([q[:, 0], side, q[:, 2]], axis=1))   # y = L
+
+    def periodic_loss(sp):
+        if per_n == 0:
+            return 0.0
+        pred = lambda xyt: net_forward(sp, _normalize(xyt, xyt_mean, xyt_std), activation=activation)
+        jac = jax.vmap(jax.jacfwd(lambda z: pred(z[None])[0]))      # (n, 2, 3)
+        left, right, bottom, top = per_pts
+        value = jnp.mean((pred(left) - pred(right)) ** 2) + jnp.mean((pred(bottom) - pred(top)) ** 2)
+        deriv = (jnp.mean((jac(left)[:, :, 0] - jac(right)[:, :, 0]) ** 2)
+                 + jnp.mean((jac(bottom)[:, :, 1] - jac(top)[:, :, 1]) ** 2))
+        return value + DOMAIN_L ** 2 * deriv
 
     xs_ic = (jnp.arange(ic_n) + 0.5) * (DOMAIN_L / ic_n)
     Xic, Yic = jnp.meshgrid(xs_ic, xs_ic, indexing='ij')
@@ -1881,7 +1953,7 @@ def train_pinn_gs(syn_params, phy_init, fixed_phy,
             l_data = jnp.mean((net_forward(sp, xyt_data_n, activation=activation) - u_data) ** 2)
             l_ic   = jnp.mean((net_forward(sp, xyt_ic_n, activation=activation) - uv_ic) ** 2)
             l_pde  = jnp.mean(residual_gs(sp, full, xyt_col, xyt_mean, xyt_std, activation=activation, net_forward=net_forward))
-            return l_data + w_ic * l_ic + gamma * l_pde, (l_data, l_pde, l_ic)
+            return l_data + w_ic * l_ic + gamma * l_pde + w_per * periodic_loss(sp), (l_data, l_pde, l_ic)
         (l_tot, (l_data, l_pde, l_ic)), g = jax.value_and_grad(objective, has_aux=True)(params)
         updates, st = opt.update(g, st, params)
         return optax.apply_updates(params, updates), st, l_tot, l_data, l_pde, l_ic
@@ -1918,7 +1990,7 @@ def train_pinn_gs(syn_params, phy_init, fixed_phy,
                 l_data = jnp.mean((net_forward(sp_, xyt_data_n, activation=activation) - u_data) ** 2)
                 l_ic   = jnp.mean((net_forward(sp_, xyt_ic_n, activation=activation) - uv_ic) ** 2)
                 l_pde  = jnp.mean(residual_gs(sp_, full_final, xyt_col, xyt_mean, xyt_std, activation=activation, net_forward=net_forward))
-                return l_data + w_ic * l_ic + gamma * l_pde
+                return l_data + w_ic * l_ic + gamma * l_pde + w_per * periodic_loss(sp_)
             val, grad = jax.value_and_grad(obj)(sp)
             flat_grad, _ = ravel_pytree(grad)
             return float(val), np.asarray(flat_grad, dtype=np.float64)
